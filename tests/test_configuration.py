@@ -1,4 +1,5 @@
 # pragma pylint: disable=missing-docstring, protected-access, invalid-name
+import dataclasses
 import json
 import warnings
 from copy import deepcopy
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from jsonschema import ValidationError
 
+import freqtrade.configuration.configuration
 from freqtrade.commands import Arguments
 from freqtrade.configuration import Configuration, validate_config_consistency
 from freqtrade.configuration.config_secrets import sanitize_config
@@ -25,7 +27,8 @@ from freqtrade.configuration.load_config import (
     load_from_files,
     log_config_error_range,
 )
-from freqtrade.constants import DEFAULT_DB_DRYRUN_URL, DEFAULT_DB_PROD_URL, ENV_VAR_PREFIX
+from freqtrade.configuration.typed import ConfigShim, RootConfig
+from freqtrade.constants import DEFAULT_DB_DRYRUN_URL, DEFAULT_DB_PROD_URL, ENV_VAR_PREFIX, Config
 from freqtrade.enums import RunMode
 from freqtrade.exceptions import ConfigurationError, OperationalException
 from tests.conftest import (
@@ -37,10 +40,69 @@ from tests.conftest import (
 
 
 @pytest.fixture(scope="function")
-def all_conf():
+def all_conf() -> Config:
     config_file = Path(__file__).parents[1] / "config_examples/config_full.example.json"
     conf = load_config_file(str(config_file))
     return conf
+
+
+@pytest.fixture(scope="function")
+def typed_config(monkeypatch, all_conf) -> RootConfig:
+    """Construct config from the full example."""
+    mock_loader = MagicMock(return_value=all_conf)
+    monkeypatch.setattr(freqtrade.configuration.configuration, "load_from_files", mock_loader)
+    args = Arguments(["--version"]).get_parsed_arg()
+    typed_config = Configuration(args).get_config()
+    # the config came from the patched loader
+    mock_loader.assert_called_once()
+    # the config has both RootConfig and dict types
+    assert isinstance(typed_config, RootConfig)
+    assert isinstance(typed_config, dict)
+    return typed_config
+
+
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("__setitem__", ("exchange", "value")),
+        ("setdefault", ("exchange", "value")),
+        ("__delitem__", ("exchange",)),
+        ("pop", ("exchange",)),
+        ("popitem", ()),
+    ],
+)
+def test_typed_config_dict_immutability(typed_config: RootConfig, method: str, params: tuple[...]):
+    """The configuration will reject modifications to its dictionary form as a means of smoke
+    testing behaviour in the pre-typed codebase."""
+    # the method is valid on a normal dictionary
+    sanity_dict = {"exchange": "original value"}
+    getattr(sanity_dict, method)(*params)
+
+    # the method raises when tried against the typed config
+    with pytest.raises(TypeError, match=r"(?i)^Config is assumed to be immutable"):
+        getattr(typed_config, method)(*params)
+
+
+def test_typed_config_loosely_immutable(typed_config: RootConfig):
+    """As frozen dataclasses, the config reduces the chance of modification."""
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        typed_config.bot_name = "moo"  # noqa
+
+
+def test_typed_config_dict_fallback(typed_config: RootConfig):
+    """The configuration falls back to returning a dictionary when it is used as one."""
+    # the config starts as both a dict and the shim
+    assert isinstance(typed_config, dict)
+    assert isinstance(typed_config, ConfigShim)
+    # the config upcasts to a dict when used as dict
+    assert not isinstance(dict(typed_config), ConfigShim)
+    assert not isinstance(typed_config.copy(), ConfigShim)
+
+    # the above properties are true for nested typed config members
+    assert isinstance(typed_config.exchange, ConfigShim)
+    assert not isinstance(typed_config["exchange"], ConfigShim)
+    assert not isinstance(typed_config.get("exchange"), ConfigShim)
+    assert dict(typed_config.exchange) == typed_config["exchange"]
 
 
 def test_load_config_missing_attributes(default_conf) -> None:

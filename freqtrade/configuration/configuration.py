@@ -15,6 +15,8 @@ from freqtrade.configuration.deprecated_settings import process_temporary_deprec
 from freqtrade.configuration.directory_operations import create_datadir, create_userdata_dir
 from freqtrade.configuration.environment_vars import enironment_vars_to_dict
 from freqtrade.configuration.load_config import load_file, load_from_files
+from freqtrade.configuration.typed import RootConfig
+from freqtrade.configuration.typed_builder import ConfigTypeBuilder
 from freqtrade.constants import Config
 from freqtrade.enums import (
     NON_UTIL_MODES,
@@ -40,16 +42,18 @@ class Configuration:
 
     def __init__(self, args: dict[str, Any], runmode: RunMode | None = None) -> None:
         self.args = args
-        self.config: Config | None = None
+        self.config: RootConfig | None = None
         self.runmode = runmode
 
-    def get_config(self) -> Config:
+    def get_config(self) -> RootConfig:
         """
         Return the config. Use this method to get the bot config
         :return: Dict: Bot config
         """
         if self.config is None:
-            self.config = self.load_config()
+            dict_config = self.load_config()
+            typed_config = ConfigTypeBuilder().root_config_from_dict(dict_config)
+            self.config = typed_config
 
         return self.config
 
