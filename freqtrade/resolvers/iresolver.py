@@ -35,6 +35,59 @@ class PathModifier:
             sys.path.remove(str_path)
 
 
+def possible_dotted_names_for_path(file_path: Path) -> list[str]:
+    """
+    Returns a list of all possible module/package names by which Python's internal
+    import machinery (including editable-installs, custom path hooks, etc.) can
+    import the file at 'file_path'.
+
+    If there are no valid dotted-names, returns an empty list.
+    """
+    resolved_path = file_path.resolve()
+    # If the file is __init__.py, the "module name" is effectively the parent directory's name
+    if resolved_path.name == "__init__.py":
+        module_basename = resolved_path.parent.name
+    elif resolved_path.suffix == ".py":
+        # Use the stem if it's a .py file
+        module_basename = resolved_path.stem
+    else:
+        # otherwise use the entire name
+        module_basename = resolved_path.name
+
+    # We'll try all possible dotted "parent-subparent-...-module" combinations,
+    # from the immediate parent up to the root, checking `importlib.util.find_spec`.
+    parts = list(resolved_path.parent.parts)
+    results = set()
+
+    # We'll build dotted names from the "deepest" parent upward, e.g. for
+    # /some/dir/foo/bar.py => "bar", "foo.bar", "dir.foo.bar", "some.dir.foo.bar", etc.
+    #
+    # For each candidate dotted name, if `find_spec` returns a spec whose .origin
+    # matches our file path, we add it to results.
+    #
+    # This uses the *actual* import system – if a path hook intercepts "foo.bar"
+    # and declares that it comes from an editable package in __editable__..., it
+    # should be recognized here.
+    for i in range(len(parts)):
+        # e.g. if i=0 => dotted_list = [] => final name is just module_basename
+        #      if i=1 => dotted_list = [last_dir] => final name = "last_dir.module_basename"
+        dotted_list = parts[-i:] if i > 0 else []
+        dotted_list.append(module_basename)
+        dotted_name = ".".join(dotted_list)
+
+        try:
+            spec = importlib.util.find_spec(dotted_name)
+        except (ImportError, ModuleNotFoundError):
+            # Some dotted names won't exist at all
+            spec = None
+
+        # If we got a spec, check if it actually points to our file_path.
+        if spec and spec.origin and Path(spec.origin).resolve() == resolved_path:
+            results.add(dotted_name)
+
+    return sorted(results)
+
+
 class IResolver:
     """
     This class contains all the logic to load custom classes
@@ -89,25 +142,32 @@ class IResolver:
         # Generate spec based on absolute path
         # Pass object_name as first argument to have logging print a reasonable name.
         with PathModifier(module_path.parent):
-            module_name = module_path.stem or ""
-            spec = importlib.util.spec_from_file_location(module_name, str(module_path))
-            if not spec:
-                return iter([None])
-
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)  # type: ignore # importlib does not use typehints
-            except (
-                AttributeError,
-                ModuleNotFoundError,
-                SyntaxError,
-                ImportError,
-                NameError,
-            ) as err:
-                # Catch errors in case a specific module is not installed
-                logger.warning(f"Could not import {module_path} due to '{err}'")
-                if enum_failed:
+            # If the module is already loaded, use it directly to avoid double importing
+            for module_name in possible_dotted_names_for_path(module_path):
+                if module_name in sys.modules:
+                    module = sys.modules[module_name]
+                    break
+            else:
+                # Otherwise, load it from the file
+                module_name = module_path.stem or ""
+                spec = importlib.util.spec_from_file_location(module_name, str(module_path))
+                if not spec:
                     return iter([None])
+
+                module = importlib.util.module_from_spec(spec)
+                try:
+                    spec.loader.exec_module(module)  # type: ignore # importlib does not use typehints
+                except (
+                    AttributeError,
+                    ModuleNotFoundError,
+                    SyntaxError,
+                    ImportError,
+                    NameError,
+                ) as err:
+                    # Catch errors in case a specific module is not installed
+                    logger.warning(f"Could not import {module_path} due to '{err}'")
+                    if enum_failed:
+                        return iter([None])
 
             def is_valid_class(obj):
                 try:
