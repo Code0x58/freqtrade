@@ -46,10 +46,14 @@ class StrategyResolver(IResolver):
             raise OperationalException(
                 "No strategy set. Please use `--strategy` to specify the strategy class to use."
             )
+        single_load = config.get("single_load", False)
 
         strategy_name = config["strategy"]
         strategy: IStrategy = StrategyResolver._load_strategy(
-            strategy_name, config=config, extra_dir=config.get("strategy_path")
+            strategy_name,
+            config=config,
+            extra_dir=config.get("strategy_path"),
+            single_load=single_load,
         )
         strategy.ft_load_params_from_file()
         # Set attributes
@@ -254,7 +258,10 @@ class StrategyResolver(IResolver):
 
     @staticmethod
     def _load_strategy(
-        strategy_name: str, config: Config, extra_dir: str | None = None
+        strategy_name: str,
+        config: Config,
+        extra_dir: str | Path | None = None,
+        single_load: bool = False,
     ) -> IStrategy:
         """
         Search and loads the specified strategy.
@@ -298,6 +305,7 @@ class StrategyResolver(IResolver):
             object_name=strategy_name,
             add_source=True,
             kwargs={"config": config},
+            single_load=single_load,
         )
 
         if strategy:

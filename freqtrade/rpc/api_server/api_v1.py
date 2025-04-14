@@ -435,7 +435,10 @@ def get_strategy(strategy: str, config=Depends(get_config)):
 
     try:
         strategy_obj = StrategyResolver._load_strategy(
-            strategy, config_, extra_dir=config_.get("strategy_path")
+            strategy,
+            config_,
+            extra_dir=config_.get("strategy_path"),
+            single_load=config_.get("single_load", False),
         )
     except OperationalException:
         raise HTTPException(status_code=404, detail="Strategy not found")

@@ -1,5 +1,7 @@
 # pragma pylint: disable=missing-docstring, protected-access, C0103
 import logging
+import shutil
+import sys
 from base64 import urlsafe_b64encode
 from pathlib import Path
 
@@ -10,7 +12,9 @@ from freqtrade.configuration import Configuration
 from freqtrade.exceptions import OperationalException
 from freqtrade.resolvers import StrategyResolver
 from freqtrade.strategy.interface import IStrategy
+from freqtrade.templates.sample_strategy import SampleStrategy
 from tests.conftest import CURRENT_TEST_STRATEGY, log_has, log_has_re
+from tests.strategy.strats.strategy_test_v3 import StrategyTestV3
 
 
 def test_search_strategy():
@@ -68,6 +72,32 @@ def test_load_strategy(default_conf, dataframe_1m):
     assert isinstance(strategy.__file__, str)
     assert "rsi" in strategy.advise_indicators(dataframe_1m, {"pair": "ETH/BTC"})
 
+    # by default the strategy module is reloaded
+    assert type(strategy) is not SampleStrategy
+    # but if in single-load mode, the strategy will not be reloaded
+    assert (
+        type(StrategyResolver.load_strategy({**default_conf, "single_load": True}))
+        is SampleStrategy
+    )
+
+
+def test_load_strategy_single_load(default_conf, tmp_path):
+    """Imported strategy modules are only available to the normal import system if single_load=True."""
+    # make a new module so we know it will not have been imported before
+    strategy_source = tmp_path / "test_load_strategy_single_load.py"
+    shutil.copy(Path(default_conf["strategy_path"]) / "strategy_test_v3.py", strategy_source)
+    default_conf["strategy_path"] = tmp_path
+    default_conf["strategy"] = StrategyTestV3.__name__
+
+    s = StrategyResolver.load_strategy(default_conf)
+    # this test will break if the class is imported in some other test module
+    assert "test_load_strategy_single_load" not in sys.modules
+    s2 = StrategyResolver.load_strategy({**default_conf, "single_load": True})
+    assert "test_load_strategy_single_load" in sys.modules
+    assert type(s) is not type(s2)
+    s3 = StrategyResolver.load_strategy({**default_conf, "single_load": True})
+    assert type(s2) is type(s3)
+
 
 def test_load_strategy_base64(dataframe_1m, caplog, default_conf):
     filepath = Path(__file__).parents[2] / "freqtrade/templates/sample_strategy.py"
@@ -90,7 +120,10 @@ def test_load_strategy_invalid_directory(caplog, default_conf, tmp_path):
     extra_dir = Path.cwd() / "some/path"
     with pytest.raises(OperationalException, match=r"Impossible to load Strategy.*"):
         StrategyResolver._load_strategy(
-            "StrategyTestV333", config=default_conf, extra_dir=extra_dir
+            "StrategyTestV333",
+            config=default_conf,
+            extra_dir=extra_dir,
+            single_load=False,
         )
 
     assert log_has_re(r"Path .*" + r"some.*path.*" + r".* does not exist", caplog)

@@ -127,7 +127,11 @@ class IResolver:
 
     @classmethod
     def _get_valid_object(
-        cls, module_path: Path, object_name: str | None, enum_failed: bool = False
+        cls,
+        module_path: Path,
+        object_name: str | None,
+        enum_failed: bool = False,
+        single_load: bool = False,
     ) -> Iterator[Any]:
         """
         Generator returning objects with matching object_type and object_name in the path given.
@@ -135,6 +139,7 @@ class IResolver:
         :param object_name: Class name of the object
         :param enum_failed: If True, will return None for modules which fail.
             Otherwise, failing modules are skipped.
+        :param single_load: If True, modules will not be re-imported.
         :return: generator containing tuple of matching objects
              Tuple format: [Object, source]
         """
@@ -143,7 +148,11 @@ class IResolver:
         # Pass object_name as first argument to have logging print a reasonable name.
         with PathModifier(module_path.parent):
             # If the module is already loaded, use it directly to avoid double importing
-            for module_name in possible_dotted_names_for_path(module_path):
+            if single_load:
+                search_space = possible_dotted_names_for_path(module_path)
+            else:
+                search_space = []
+            for module_name in search_space:
                 if module_name in sys.modules:
                     module = sys.modules[module_name]
                     break
@@ -155,6 +164,8 @@ class IResolver:
                     return iter([None])
 
                 module = importlib.util.module_from_spec(spec)
+                if single_load:
+                    sys.modules[module_name] = module
                 try:
                     spec.loader.exec_module(module)  # type: ignore # importlib does not use typehints
                 except (
@@ -190,12 +201,18 @@ class IResolver:
 
     @classmethod
     def _search_object(
-        cls, directory: Path, *, object_name: str, add_source: bool = False
+        cls,
+        directory: Path,
+        *,
+        object_name: str,
+        add_source: bool = False,
+        single_load: bool = False,
     ) -> tuple[Any, Path] | tuple[None, None]:
         """
         Search for the objectname in the given directory
         :param directory: relative or absolute directory path
         :param object_name: ClassName of the object to load
+        :param single_load: If True, modules will not be re-imported.
         :return: object class
         """
         logger.debug(f"Searching for {cls.object_type.__name__} {object_name} in '{directory}'")
@@ -209,7 +226,9 @@ class IResolver:
                 continue
             module_path = entry.resolve()
 
-            obj = next(cls._get_valid_object(module_path, object_name), None)
+            obj = next(
+                cls._get_valid_object(module_path, object_name, single_load=single_load), None
+            )
 
             if obj:
                 obj[0].__file__ = str(entry)
@@ -220,7 +239,13 @@ class IResolver:
 
     @classmethod
     def _load_object(
-        cls, paths: list[Path], *, object_name: str, add_source: bool = False, kwargs: dict
+        cls,
+        paths: list[Path],
+        *,
+        object_name: str,
+        add_source: bool = False,
+        kwargs: dict,
+        single_load: bool,
     ) -> Any | None:
         """
         Try to load object from path list.
@@ -229,7 +254,10 @@ class IResolver:
         for _path in paths:
             try:
                 (module, module_path) = cls._search_object(
-                    directory=_path, object_name=object_name, add_source=add_source
+                    directory=_path,
+                    object_name=object_name,
+                    add_source=add_source,
+                    single_load=single_load,
                 )
                 if module:
                     logger.info(
@@ -263,7 +291,12 @@ class IResolver:
             config, user_subdir=cls.user_subdir, extra_dirs=extra_dirs
         )
 
-        found_object = cls._load_object(paths=abs_paths, object_name=object_name, kwargs=kwargs)
+        found_object = cls._load_object(
+            paths=abs_paths,
+            object_name=object_name,
+            kwargs=kwargs,
+            single_load=config.get("single_load", False),
+        )
         if found_object:
             return found_object
         raise OperationalException(
@@ -306,6 +339,7 @@ class IResolver:
         enum_failed: bool,
         recursive: bool = False,
         basedir: Path | None = None,
+        single_load: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Searches a directory for valid objects
@@ -313,6 +347,7 @@ class IResolver:
         :param enum_failed: If True, will return None for modules which fail.
             Otherwise, failing modules are skipped.
         :param recursive: Recursively walk directory tree searching for strategies
+        :param single_load: If True, modules will not be reloaded
         :return: List of dicts containing 'name', 'class' and 'location' entries
         """
         logger.debug(f"Searching for {cls.object_type.__name__} '{directory}'")
@@ -328,7 +363,9 @@ class IResolver:
                 and not entry.name.startswith(".")
             ):
                 objects.extend(
-                    cls._search_all_objects(entry, enum_failed, recursive, basedir or directory)
+                    cls._search_all_objects(
+                        entry, enum_failed, recursive, basedir or directory, single_load=single_load
+                    )
                 )
             # Only consider python files
             if entry.suffix != ".py":
@@ -337,7 +374,10 @@ class IResolver:
             module_path = entry.resolve()
             logger.debug(f"Path {module_path}")
             for obj in cls._get_valid_object(
-                module_path, object_name=None, enum_failed=enum_failed
+                module_path,
+                object_name=None,
+                enum_failed=enum_failed,
+                single_load=single_load,
             ):
                 objects.append(
                     {

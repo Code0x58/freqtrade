@@ -29,6 +29,11 @@ __IN_STRATEGY = "\nUsually specified in the strategy and missing in the configur
 CONF_SCHEMA = {
     "type": "object",
     "properties": {
+        "single_load": {
+            "description": "When resolving classes like strategies and plugins, only import the source module once.",
+            "type": "boolean",
+            "default": False,
+        },
         "max_open_trades": {
             "description": "Maximum number of open trades. -1 for unlimited.",
             "type": ["integer", "number"],
